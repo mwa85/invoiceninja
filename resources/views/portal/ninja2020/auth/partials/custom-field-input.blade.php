@@ -45,6 +45,16 @@
         </select>
         @break
 
+    @case('url')
+        <input
+            id="{{ $field['key'] }}"
+            type="url"
+            class="input w-full"
+            name="{{ $field['key'] }}"
+            value="{{ old($field['key']) }}"
+        />
+        @break
+
     @default
         <input
             id="{{ $field['key'] }}"

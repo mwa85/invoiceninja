@@ -103,6 +103,13 @@ class Helpers
             case 'switch':
                 return trim($value ?? '') == 'yes' ? ctrans('texts.yes') : ctrans('texts.no');
 
+            case 'url':
+                if (is_null($value) || trim($value) === '') {
+                    return '';
+                }
+
+                // Escape the URL and return an anchor so that it is clickable in HTML contexts.
+                return '<a href="' . e($value) . '" target="_blank" rel="noopener noreferrer">' . e($value) . '</a>';
 
             default:
                 return is_null($value) ? '' : $this->processReservedKeywords($value, $entity);
@@ -128,7 +135,7 @@ class Helpers
             return $custom_field_parts[0];
         }
 
-        $field = str_replace(["quote","credit"], ["invoice", "invoice"], $field);
+        $field = str_replace(["quote","credit"], ["invoice", "invoice"] , $field);
 
         if ($custom_fields && property_exists($custom_fields, $field)) {
             $custom_field = $custom_fields->{$field};
@@ -275,7 +282,7 @@ class Helpers
 
             // If right side contains one of math operations, calculate.
             if (Str::contains(str_replace("</", "", $right), ['+'])) {
-                if (preg_match('/(?!^-)[+*\/-](\s?-)?/', $right, $_matches) !== 1) {
+                if (preg_match('/(?!^-)[+*\/\-](\s?-)?/', $right, $_matches) !== 1) {
                     continue;
                 }
 
@@ -321,7 +328,7 @@ class Helpers
             }
 
             if (Str::contains(str_replace("</", "", $match), ['-', '+', '/', '*'])) {
-                if (preg_match('/(?!^-)[+*\/-](\s?-)?/', $match, $_matches) !== 1) {
+                if (preg_match('/(?!^-)[+*\/\-](\s?-)?/', $match, $_matches) !== 1) {
                     continue;
                 }
 

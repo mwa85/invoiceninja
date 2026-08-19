@@ -68,7 +68,7 @@ class CustomFieldService
     /**
      * Build a map of validation rules keyed by field key.
      *
-     * @param  array<int, array{key: string, required: bool, type: string, options: array<string>}>  $fields
+     * @param  array<int, array{key: string, required: bool, type: string, options: array<string}>}>  $fields
      * @return array<string, array<mixed>>
      */
     public function buildRules(array $fields): array
@@ -94,6 +94,7 @@ class CustomFieldService
             'date' => array_merge($base, ['date']),
             'dropdown' => array_merge($base, [Rule::in($field['options'])]),
             'switch' => array_merge($base, [Rule::in(['yes', 'no', ''])]),
+            'url' => array_merge($base, ['url', 'max:1000']),
             default => array_merge($base, ['string', 'max:1000']),
         };
     }
@@ -102,7 +103,7 @@ class CustomFieldService
      * Parse a custom field definition string of the form "Label|type".
      *
      * Returns ['label', 'type', 'options'] where type is one of:
-     * 'date', 'text', 'switch', 'textarea', 'dropdown'.
+     * 'date', 'text', 'switch', 'textarea', 'dropdown', 'url'.
      *
      * @return array{label: string, type: string, options: array<string>}
      */
@@ -121,6 +122,7 @@ class CustomFieldService
             'date' => ['label' => $label, 'type' => 'date', 'options' => []],
             'single_line_text' => ['label' => $label, 'type' => 'text', 'options' => []],
             'switch' => ['label' => $label, 'type' => 'switch', 'options' => []],
+            'url' => ['label' => $label, 'type' => 'url', 'options' => []],
             default => ['label' => $label, 'type' => 'dropdown', 'options' => array_map('trim', explode(',', $type_part))],
         };
     }

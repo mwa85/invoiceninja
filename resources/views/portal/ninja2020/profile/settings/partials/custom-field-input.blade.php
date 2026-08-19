@@ -24,6 +24,10 @@
         </select>
         @break
 
+    @case('url')
+        <input id="{{ $field['key'] }}" type="url" class="input w-full" wire:model="{{ $field['key'] }}" />
+        @break
+
     @default
         <input id="{{ $field['key'] }}" type="text" class="input w-full" wire:model="{{ $field['key'] }}" />
 @endswitch
