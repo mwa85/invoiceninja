@@ -31,6 +31,7 @@ use App\Models\TransactionEvent;
 use App\Models\Webhook;
 use App\Repositories\ClientRepository;
 use App\Services\EDocument\Standards\France\FranceEReportVariant;
+use App\Services\EDocument\Standards\France\FrancePaymentNotificationProcessor;
 use App\Services\EDocument\Standards\France\FranceReportingEventType;
 use App\Services\EDocument\Standards\France\FranceReportingStatus;
 use App\Services\EDocument\Standards\France\FranceRuntimeProjection;
@@ -41,7 +42,6 @@ use App\Services\EDocument\Standards\France\ReportingProfile;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Bus;
-use Illuminate\Validation\ValidationException;
 use Tests\MockAccountData;
 use Tests\TestCase;
 
@@ -93,6 +93,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
 
     public function test_scope_invalidation_discovers_untouched_documents_when_reporting_is_enabled(): void
     {
+        $this->travelTo(CarbonImmutable::parse('2026-09-16 12:00:00', 'Europe/Paris'));
         $invoice = $this->makeInvoice('FR', 'individual');
         Bus::fake();
 
@@ -127,6 +128,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
         (new FranceEReportingCron($this->company->id, $this->company->db))->handle(
             app(FranceReportingScopePlanner::class),
             app(FranceReportMaterializer::class),
+            app(FrancePaymentNotificationProcessor::class),
         );
 
         $factQuery = TransactionEvent::query()
@@ -138,6 +140,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
         (new FranceEReportingCron($this->company->id, $this->company->db))->handle(
             app(FranceReportingScopePlanner::class),
             app(FranceReportMaterializer::class),
+            app(FrancePaymentNotificationProcessor::class),
         );
 
         $this->assertSame($factCount, $factQuery->count());
@@ -150,6 +153,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
         (new FranceEReportingCron())->handle(
             app(FranceReportingScopePlanner::class),
             app(FranceReportMaterializer::class),
+            app(FrancePaymentNotificationProcessor::class),
         );
 
         Bus::assertDispatched(FranceEReportingCron::class, function (FranceEReportingCron $job): bool {
@@ -183,7 +187,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
             ->count());
     }
 
-    public function test_disabling_reporting_for_an_existing_client_records_a_reversal_invalidation(): void
+    public function test_client_setting_cannot_disable_company_reporting(): void
     {
         $invoice = $this->makeInvoice('FR', 'individual');
         (new RecordFranceEReportingDocumentLifecycle(
@@ -196,7 +200,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
             ->where('invoice_id', $invoice->id)
             ->where('event_id', FranceReportingEventType::DocumentLifecycle->value)
             ->count();
-        $settings = $invoice->client->settings ?: CompanySettings::defaults();
+        $settings = clone ($invoice->client->settings ?: CompanySettings::defaults());
         $settings->france_reporting_enabled = false;
         $invoice->client->settings = $settings;
         $invoice->client->saveQuietly();
@@ -219,11 +223,26 @@ class RecordFranceEReportingTransactionTest extends TestCase
             ReportingProfile::TenDay,
             CarbonImmutable::parse($invoice->date, 'Europe/Paris'),
         );
-        $this->assertSame([], app(FranceRuntimeProjection::class)->current(
+        $this->assertNotSame([], app(FranceRuntimeProjection::class)->current(
             $this->company,
             FranceEReportVariant::TransactionInitial,
             $period,
         ));
+    }
+
+    public function test_client_setting_cannot_enable_company_reporting(): void
+    {
+        $settings = clone ($this->client->settings ?: CompanySettings::defaults());
+        $settings->france_reporting_enabled = true;
+        $this->client->settings = $settings;
+        $this->client->saveQuietly();
+        $companySettings = clone $this->company->settings;
+        $companySettings->france_reporting_enabled = false;
+        $this->company->settings = $companySettings;
+        $this->company->saveQuietly();
+        $this->client->unsetRelation('company');
+
+        $this->assertFalse($this->client->fresh()->reportableFrTransaction());
     }
 
     public function test_bulk_client_country_update_records_one_batched_scope_invalidation(): void
@@ -260,6 +279,7 @@ class RecordFranceEReportingTransactionTest extends TestCase
         (new FranceEReportingCron($this->company->id, $this->company->db))->handle(
             app(FranceReportingScopePlanner::class),
             app(FranceReportMaterializer::class),
+            app(FrancePaymentNotificationProcessor::class),
         );
 
         $this->assertNull($invalidation->fresh());
@@ -270,7 +290,33 @@ class RecordFranceEReportingTransactionTest extends TestCase
         $this->assertSame($germany->id, $invoice->client->fresh()->country_id);
     }
 
-    public function test_reporting_cannot_be_disabled_after_regulatory_history_exists(): void
+    public function test_bulk_client_country_update_skips_reporting_invalidation_when_reporting_is_disabled(): void
+    {
+        $invoice = $this->makeInvoice('FR', 'business');
+        $germany = Country::query()->where('iso_3166_2', 'DE')->firstOrFail();
+        $settings = $this->company->settings;
+        $settings->france_reporting_enabled = false;
+        $this->company->settings = $settings;
+        $this->company->saveQuietly();
+        $before = TransactionEvent::query()
+            ->where('company_id', $this->company->id)
+            ->where('event_id', FranceReportingEventType::ScopeInvalidation->value)
+            ->count();
+
+        app(ClientRepository::class)->bulkUpdate(
+            Client::query()->whereKey($invoice->client_id),
+            'country_id',
+            $germany->id,
+        );
+
+        $this->assertSame($before, TransactionEvent::query()
+            ->where('company_id', $this->company->id)
+            ->where('event_id', FranceReportingEventType::ScopeInvalidation->value)
+            ->count());
+        $this->assertSame($germany->id, $invoice->client->fresh()->country_id);
+    }
+
+    public function test_direct_model_save_does_not_apply_reporting_disable_request_validation(): void
     {
         $invoice = $this->makeInvoice('FR', 'individual');
         (new RecordFranceEReportingDocumentLifecycle(
@@ -283,12 +329,12 @@ class RecordFranceEReportingTransactionTest extends TestCase
         $settings->france_reporting_enabled = false;
         $this->company->settings = $settings;
 
-        $this->expectException(ValidationException::class);
-
         $this->company->save();
+
+        $this->assertFalse((bool) $this->company->fresh()->getSetting('france_reporting_enabled'));
     }
 
-    public function test_reporting_schedule_cannot_change_after_a_report_is_accepted(): void
+    public function test_direct_model_save_does_not_apply_accepted_report_schedule_request_validation(): void
     {
         $invoice = $this->makeInvoice('FR', 'individual');
         $this->recordAcceptedReport($invoice);
@@ -296,23 +342,29 @@ class RecordFranceEReportingTransactionTest extends TestCase
         $settings->france_reporting_schedule = ReportingProfile::Monthly->value;
         $this->company->settings = $settings;
 
-        $this->expectException(ValidationException::class);
-
         $this->company->save();
+
+        $this->assertSame(
+            ReportingProfile::Monthly->value,
+            $this->company->fresh()->getSetting('france_reporting_schedule'),
+        );
     }
 
-    public function test_reporting_legal_entity_cannot_change_after_a_report_is_accepted(): void
+    public function test_direct_model_save_does_not_apply_accepted_report_legal_entity_request_validation(): void
     {
         $invoice = $this->makeInvoice('FR', 'individual');
         $this->recordAcceptedReport($invoice);
         $this->company->legal_entity_id = ((int) $this->company->legal_entity_id) + 1;
 
-        $this->expectException(ValidationException::class);
-
         $this->company->save();
+
+        $this->assertSame(
+            (int) $this->company->legal_entity_id,
+            (int) $this->company->fresh()->legal_entity_id,
+        );
     }
 
-    public function test_reporting_schedule_cannot_change_while_a_report_is_open(): void
+    public function test_direct_model_save_does_not_apply_open_report_schedule_request_validation(): void
     {
         $invoice = $this->makeInvoice('FR', 'individual');
         $this->recordReport($invoice, FranceReportingStatus::Pending);
@@ -320,20 +372,26 @@ class RecordFranceEReportingTransactionTest extends TestCase
         $settings->france_reporting_schedule = ReportingProfile::Monthly->value;
         $this->company->settings = $settings;
 
-        $this->expectException(ValidationException::class);
-
         $this->company->save();
+
+        $this->assertSame(
+            ReportingProfile::Monthly->value,
+            $this->company->fresh()->getSetting('france_reporting_schedule'),
+        );
     }
 
-    public function test_reporting_legal_entity_cannot_change_while_a_report_is_open(): void
+    public function test_direct_model_save_does_not_apply_open_report_legal_entity_request_validation(): void
     {
         $invoice = $this->makeInvoice('FR', 'individual');
         $this->recordReport($invoice, FranceReportingStatus::Sent);
         $this->company->legal_entity_id = ((int) $this->company->legal_entity_id) + 1;
 
-        $this->expectException(ValidationException::class);
-
         $this->company->save();
+
+        $this->assertSame(
+            (int) $this->company->legal_entity_id,
+            (int) $this->company->fresh()->legal_entity_id,
+        );
     }
 
     public function test_cron_retries_transport_failures_but_does_not_resubmit_sent_reports(): void
@@ -344,12 +402,17 @@ class RecordFranceEReportingTransactionTest extends TestCase
         Bus::fake([SubmitFranceEReport::class]);
         $method = new \ReflectionMethod(FranceEReportingCron::class, 'dispatchPersistedSubmissions');
 
-        $method->invoke(new FranceEReportingCron(), $this->company, $this->company->db);
+        $method->invoke(
+            new FranceEReportingCron(),
+            $this->company,
+            $this->company->db,
+            app(FrancePaymentNotificationProcessor::class),
+        );
 
         Bus::assertDispatchedTimes(SubmitFranceEReport::class, 1);
     }
 
-    public function test_schedule_change_before_reporting_history_records_scope_invalidation(): void
+    public function test_direct_company_schedule_change_does_not_record_scope_invalidation(): void
     {
         $before = TransactionEvent::query()
             ->where('company_id', $this->company->id)
@@ -364,23 +427,15 @@ class RecordFranceEReportingTransactionTest extends TestCase
             ReportingProfile::Monthly->value,
             $this->company->fresh()->getSetting('france_reporting_schedule'),
         );
-        $this->assertSame($before + 1, TransactionEvent::query()
+        $this->assertSame($before, TransactionEvent::query()
             ->where('company_id', $this->company->id)
             ->where('event_id', FranceReportingEventType::ScopeInvalidation->value)
             ->count());
-        $this->assertTrue((bool) data_get(
-            TransactionEvent::query()
-                ->where('company_id', $this->company->id)
-                ->where('event_id', FranceReportingEventType::ScopeInvalidation->value)
-                ->latest('id')
-                ->value('payment_request'),
-            'supersede_unaccepted_transaction_scopes',
-        ));
     }
 
     public function test_schedule_changes_do_not_move_an_accepted_document_into_a_duplicate_scope(): void
     {
-        $invoice = $this->makeInvoice('FR', 'individual');
+        $invoice = $this->makeInvoice('FR', 'individual', '2026-09-15');
         TransactionEvent::create([
             'company_id' => $this->company->id,
             'client_id' => $invoice->client_id,
@@ -670,10 +725,10 @@ class RecordFranceEReportingTransactionTest extends TestCase
 
     public function test_runtime_projection_excludes_domestic_business_documents_from_f10(): void
     {
-        $this->makeInvoice('FR', 'business');
+        $invoice = $this->makeInvoice('FR', 'business');
         $period = ReportingCalendar::currentPeriod(
             ReportingProfile::TenDay,
-            CarbonImmutable::parse('2026-09-15', 'Europe/Paris'),
+            CarbonImmutable::parse($invoice->date, 'Europe/Paris'),
         );
 
         $this->assertSame([], app(FranceRuntimeProjection::class)->current(
@@ -732,8 +787,12 @@ class RecordFranceEReportingTransactionTest extends TestCase
         $this->company = $this->company->fresh();
     }
 
-    private function makeInvoice(string $countryCode, string $classification): Invoice
+    private function makeInvoice(string $countryCode, string $classification, ?string $date = null): Invoice
     {
+        $date ??= ReportingCalendar::currentPeriod(
+            ReportingProfile::TenDay,
+            CarbonImmutable::now('Europe/Paris'),
+        )->start->toDateString();
         $country = Country::query()->where('iso_3166_2', $countryCode)->firstOrFail();
         $client = Client::factory()->create([
             'user_id' => $this->user->id,
@@ -760,8 +819,8 @@ class RecordFranceEReportingTransactionTest extends TestCase
             'company_id' => $this->company->id,
             'user_id' => $this->user->id,
             'number' => 'FR-RUNTIME-' . $client->id,
-            'date' => '2026-09-15',
-            'due_date' => '2026-10-15',
+            'date' => $date,
+            'due_date' => CarbonImmutable::parse($date, 'Europe/Paris')->addMonth()->toDateString(),
             'status_id' => Invoice::STATUS_SENT,
             'line_items' => [$item],
         ]);

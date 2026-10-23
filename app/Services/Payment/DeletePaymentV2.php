@@ -110,7 +110,7 @@ class DeletePaymentV2
         if ($this->payment->credits()->exists()) {
             $this->payment->credits()->each(function ($paymentable_credit) {
                 $multiplier = 1;
-
+                /** @var \App\Models\Credit $paymentable_credit */
                 //balance remaining on the credit that can offset the paid to date.
                 $net_credit_amount = BcMath::sub($paymentable_credit->pivot->amount, $paymentable_credit->pivot->refunded, 2);
 
@@ -167,6 +167,7 @@ class DeletePaymentV2
                     return;
                 }
 
+                /** @var \App\Models\Invoice $paymentable_invoice */
                 $net_deletable = BcMath::sub($paymentable_invoice->pivot->amount, $paymentable_invoice->pivot->refunded, 2);
 
                 $this->_paid_to_date_deleted = BcMath::add($this->_paid_to_date_deleted, $net_deletable, 2);
@@ -247,26 +248,26 @@ class DeletePaymentV2
 
                 }
 
-                $paymentable_invoice->loadMissing(['client.country', 'client.company']);
+                // $paymentable_invoice->loadMissing(['client.country', 'client.company']);
 
-                if ($paymentable_invoice->client->reportableFrTransaction()) {
-                    $paymentable = Paymentable::withTrashed()
-                        ->where('payment_id', $this->payment->id)
-                        ->where('paymentable_id', $paymentable_invoice->id)
-                        ->where('paymentable_type', 'invoices')
-                        ->latest('id')
-                        ->first();
+                // if ($paymentable_invoice->client->reportableFrTransaction()) {
+                //     $paymentable = Paymentable::withTrashed()
+                //         ->where('payment_id', $this->payment->id)
+                //         ->where('paymentable_id', $paymentable_invoice->id)
+                //         ->where('paymentable_type', 'invoices')
+                //         ->latest('id')
+                //         ->first();
 
-                    app(FrancePaymentApplicationRecorder::class)->recordMovement(
-                        payment: $this->payment,
-                        invoice: $paymentable_invoice,
-                        paymentable: $paymentable,
-                        movementAmount: BcMath::mul($net_deletable, -1, 2),
-                        movementDate: now($this->payment->company->timezone()?->name ?: config('app.timezone'))->toDateString(),
-                        movementType: FrancePaymentApplicationRecorder::MOVEMENT_DELETED,
-                        movementIdentity: $this->mutation_key . ':paymentable:' . $paymentable->id,
-                    );
-                }
+                //     app(FrancePaymentApplicationRecorder::class)->recordMovement(
+                //         payment: $this->payment,
+                //         invoice: $paymentable_invoice,
+                //         paymentable: $paymentable,
+                //         movementAmount: BcMath::mul($net_deletable, -1, 2),
+                //         movementDate: now($this->payment->company->timezone()?->name ?: config('app.timezone'))->toDateString(),
+                //         movementType: FrancePaymentApplicationRecorder::MOVEMENT_DELETED,
+                //         movementIdentity: $this->mutation_key . ':paymentable:' . $paymentable->id,
+                //     );
+                // }
 
             });
 
