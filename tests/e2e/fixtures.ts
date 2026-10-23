@@ -1,4 +1,5 @@
 import { test as base } from '@playwright/test';
+import { loadPlaywrightEnvironment } from './environment';
 import {
     bulkAction,
     createApiContext,
@@ -6,6 +7,7 @@ import {
     createEntityViaApi,
     getCompany,
     getUsers,
+    listCompanyGateways,
     updateCompany,
     updateUser,
     type ApiContext,
@@ -15,6 +17,8 @@ import {
     type EntityType,
 } from './api-helpers';
 import { accountForParallelIndex, type TestAccount } from './accounts';
+
+loadPlaywrightEnvironment();
 
 interface TrackedEntity {
     type: EntityType;
@@ -48,9 +52,10 @@ export const test = base.extend<
     {
         api: ApiFixture;
         companyGuard: CompanyGuardFixture;
+        gatewayGuard: void;
         notificationGuard: NotificationGuardFixture;
     },
-    { account: TestAccount }
+    { account: TestAccount; workerApi: ApiContext }
 >({
     account: [
         async ({}, use, workerInfo) => {
@@ -59,19 +64,31 @@ export const test = base.extend<
         { scope: 'worker' },
     ],
 
-    api: async ({ account }, use) => {
-        const context = await createApiContext(
-            account.apiUrl,
-            account.ownerEmail,
-            account.password,
-        );
+    // Login once per worker. Give this its own budget: Playwright charges
+    // worker-fixture time to the first test, which otherwise fails as
+    // "setting up context" when remote API login is slow.
+    workerApi: [
+        async ({ account }, use) => {
+            const context = await createApiContext(
+                account.apiUrl,
+                account.ownerEmail,
+                account.password,
+            );
+
+            await use(context);
+            await context.request.dispose();
+        },
+        { scope: 'worker', timeout: 60_000 },
+    ],
+
+    api: async ({ workerApi }, use) => {
         const tracked: TrackedEntity[] = [];
 
         await use({
-            context,
+            context: workerApi,
 
             async createEntity(type, data, options = {}) {
-                const entity = await createEntityViaApi(context, type, data);
+                const entity = await createEntityViaApi(workerApi, type, data);
 
                 if (options.cleanup !== false && entity.id) {
                     tracked.push({ type, id: String(entity.id) });
@@ -82,7 +99,7 @@ export const test = base.extend<
 
             async createEntityFromBlank(type, overrides, options = {}) {
                 const entity = await createEntityFromBlankViaApi(
-                    context,
+                    workerApi,
                     type,
                     overrides,
                 );
@@ -99,9 +116,43 @@ export const test = base.extend<
             },
         });
 
-        await cleanupTrackedEntities(context, tracked);
-        await context.request.dispose();
+        await cleanupTrackedEntities(workerApi, tracked);
     },
+
+    /**
+     * Puts back any company gateway a test archived.
+     *
+     * Isolating the gateway under test - archiving every other one so the portal offers
+     * a single option - is the pattern here. Without this, the archive outlives the test
+     * and every later spec finds nothing to pay with.
+     */
+    gatewayGuard: [
+        async ({ workerApi }, use) => {
+            const before = (await listCompanyGateways(workerApi))
+                .filter((gateway) => !gateway.archived_at && !gateway.is_deleted)
+                .map((gateway) => gateway.id);
+
+            await use();
+
+            const archived = (await listCompanyGateways(workerApi))
+                .filter(
+                    (gateway) =>
+                        Boolean(gateway.archived_at) &&
+                        before.includes(gateway.id),
+                )
+                .map((gateway) => gateway.id);
+
+            if (archived.length > 0) {
+                await bulkAction(
+                    workerApi,
+                    'company_gateways',
+                    archived,
+                    'restore',
+                );
+            }
+        },
+        { auto: true },
+    ],
 
     companyGuard: async ({ api }, use) => {
         let original: CompanyEntity | undefined;

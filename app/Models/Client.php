@@ -21,6 +21,7 @@ use App\Models\Presenters\ClientPresenter;
 use App\Models\Traits\Excludable;
 use App\Models\Traits\HasTags;
 use App\Services\Client\ClientService;
+use App\Utils\AppLink;
 use App\Utils\Traits\AppSetup;
 use App\Utils\Traits\ClientGroupSettingsSaver;
 use App\Utils\Traits\GeneratesCounter;
@@ -470,6 +471,11 @@ class Client extends BaseModel implements HasLocalePreference
         return $this->hasMany(SystemLog::class)->take(50)->orderBy('id', 'desc');
     }
 
+    public function transaction_events(): HasMany
+    {
+        return $this->hasMany(TransactionEvent::class);
+    }
+
     public function timezone(): Timezone
     {
         return Timezone::find($this->getSetting('timezone_id'));
@@ -641,6 +647,11 @@ class Client extends BaseModel implements HasLocalePreference
     public function group_settings(): BelongsTo
     {
         return $this->belongsTo(GroupSetting::class);
+    }
+
+    public function purchase_orders(): HasMany
+    {
+        return $this->hasMany(PurchaseOrder::class)->withTrashed();
     }
 
     /**
@@ -1088,9 +1099,9 @@ class Client extends BaseModel implements HasLocalePreference
         return ctrans('texts.client');
     }
 
-    public function portalUrl(bool $use_react_url): string
+    public function portalUrl(): string
     {
-        return $use_react_url ? config('ninja.react_url') . "/#/clients/{$this->hashed_id}" : config('ninja.app_url');
+        return AppLink::forRecord('clients', $this);
     }
 
     /**
@@ -1114,7 +1125,7 @@ class Client extends BaseModel implements HasLocalePreference
      */
     public function reportableFrTransaction(): bool
     {
-        return (bool) $this->getSetting('france_reporting_enabled');
+        return (bool) $this->company->getSetting('france_reporting_enabled');
     }
 
     /**
